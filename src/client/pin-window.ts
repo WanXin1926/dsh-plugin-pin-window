@@ -1,7 +1,8 @@
 /**
  * Display-only pin window: builds a self-contained HTML document for one
  * finalized assistant message turn and opens it in a separate popup window.
- * The window renders the same turn content the chat card shows — every
+ * The window loads the harness's own stylesheets (for theme tokens and fonts)
+ * and then renders the same turn content the chat card shows — every
  * assistant step (text/reasoning/images) and every tool call with its result.
  * No framework, no controls, no storage — just the selected message turn.
  * @module dsh-plugin-pin-window/client/pin-window
@@ -131,7 +132,7 @@ function collectList(lines: string[], start: number, markerTest: (line: string) 
   return { items, next: i }
 }
 
-/** Render a block sequence for one text body. */
+/** Render a markdown block sequence for one text body. */
 export function renderMarkdown(text: string): string {
   const lines = text.replace(/\r\n?/g, '\n').split('\n')
   const out: string[] = []
@@ -152,7 +153,7 @@ export function renderMarkdown(text: string): string {
       }
       if (i < lines.length) i += 1 // closing fence
       const langAttr = language.length > 0 ? ` data-lang="${escapeHtml(language)}"` : ''
-      out.push(`<pre class="code"><code${langAttr}>${escapeHtml(code.join('\n'))}</code></pre>`)
+      out.push(`<pre class="pin-code-block"><code${langAttr}>${escapeHtml(code.join('\n'))}</code></pre>`)
       continue
     }
 
@@ -228,19 +229,30 @@ export function renderMarkdown(text: string): string {
   return out.join('')
 }
 
+/** Wrap rendered markdown in the class the popup stylesheet targets. */
+function markdownSection(text: string): string {
+  return `<div class="pin-markdown">${renderMarkdown(text)}</div>`
+}
+
+/** First line of reasoning text, mirroring ReasoningRow's collapsed summary. */
+function firstLine(text: string): string {
+  const newline = text.indexOf('\n')
+  return newline === -1 ? text : text.slice(0, newline)
+}
+
 /** Render one assistant content block. */
 function renderBlock(block: AssistantBlock, t: PinWindowText): string {
   switch (block.kind) {
     case 'text':
-      return `<section class="block text">${renderMarkdown(block.text)}</section>`
+      return markdownSection(block.text)
     case 'reasoning':
-      return `<details class="block reasoning"><summary>${escapeHtml(t('window.reasoning'))}</summary><div class="reasoning-body">${renderMarkdown(block.text)}</div></details>`
+      return `<details class="pin-reasoning"><summary class="pin-reasoning-summary"><span class="pin-reasoning-title">${escapeHtml(t('window.reasoning'))}</span><span class="pin-reasoning-sep" aria-hidden="true"></span><span class="pin-reasoning-text">${escapeHtml(firstLine(block.text))}</span></summary><div class="pin-reasoning-body">${escapeHtml(block.text)}</div></details>`
     case 'tool-call':
-      return `<details class="block tool"><summary class="tool-summary">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(block.name)}</summary><pre class="tool-args">${escapeHtml(block.argsRaw)}</pre></details>`
+      return `<details class="pin-tool"><summary class="pin-tool-summary"><span class="pin-tool-title">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(block.name)}</span></summary><pre class="pin-tool-args">${escapeHtml(block.argsRaw)}</pre></details>`
     case 'image':
-      return `<section class="block image">${escapeHtml(t('window.image'))}</section>`
+      return `<div class="pin-image">${escapeHtml(t('window.image'))}</div>`
     case 'other':
-      return `<details class="block other"><summary class="other-summary">${escapeHtml(t('window.other'))}</summary><pre>${escapeHtml(JSON.stringify(block.block, null, 2))}</pre></details>`
+      return `<details class="pin-other"><summary class="pin-other-summary">${escapeHtml(t('window.other'))}</summary><pre>${escapeHtml(JSON.stringify(block.block, null, 2))}</pre></details>`
   }
 }
 
@@ -271,118 +283,187 @@ function renderToolRoot(root: ToolCallBlock, t: PinWindowText): string {
     const content = toolContentText(settled.content)
     const errorClass = settled.isError ? ' error' : ''
     const errorLine = settled.isError && settled.error !== undefined
-      ? `<div class="tool-error">${escapeHtml(`${settled.error.name}: ${settled.error.code}`)}</div>`
+      ? `<div class="pin-tool-error">${escapeHtml(`${settled.error.name}: ${settled.error.code}`)}</div>`
       : ''
-    return `<details class="block tool"><summary class="tool-summary${errorClass}">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(name)}</summary>${args.length > 0 ? `<pre class="tool-args">${escapeHtml(args)}</pre>` : ''}${content.length > 0 ? `<pre class="tool-result${errorClass}">${escapeHtml(content)}</pre>` : ''}${errorLine}</details>`
+    return `<details class="pin-tool"><summary class="pin-tool-summary${errorClass}"><span class="pin-tool-title">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(name)}</span></summary>${args.length > 0 ? `<pre class="pin-tool-args">${escapeHtml(args)}</pre>` : ''}${content.length > 0 ? `<pre class="pin-tool-result${errorClass}">${escapeHtml(content)}</pre>` : ''}${errorLine}</details>`
   }
   const running = root as { name: string; argsRaw: string }
-  return `<details class="block tool running"><summary class="tool-summary">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(running.name)}</summary><pre class="tool-args">${escapeHtml(running.argsRaw)}</pre></details>`
+  return `<details class="pin-tool running"><summary class="pin-tool-summary"><span class="pin-tool-title">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(running.name)}</span></summary><pre class="pin-tool-args">${escapeHtml(running.argsRaw)}</pre></details>`
 }
 
-/** The popup document stylesheet (theme follows the opener). */
+/** The popup's own layout, reusing the harness theme tokens from the linked stylesheets. */
 const POPUP_CSS = `
-:root {
-  --pin-bg: #ffffff;
-  --pin-fg: #1f2329;
-  --pin-muted: #6b7280;
-  --pin-border: #e5e7eb;
-  --pin-code-bg: #f6f7f9;
-  --pin-link: #2563eb;
-  --pin-error: #c62828;
-}
-:root[data-dark="true"] {
-  --pin-bg: #17181a;
-  --pin-fg: #e6e6e6;
-  --pin-muted: #9ca3af;
-  --pin-border: #2a2c30;
-  --pin-code-bg: #202225;
-  --pin-link: #7aa2f7;
-  --pin-error: #ff6b6b;
-}
-* { box-sizing: border-box; }
 body {
   margin: 0;
-  background: var(--pin-bg);
-  color: var(--pin-fg);
-  font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-markdown-base);
 }
 main { max-width: 860px; margin: 0 auto; padding: 28px 24px 48px; }
 header {
-  border-bottom: 1px solid var(--pin-border);
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
   padding-bottom: 14px;
   margin-bottom: 20px;
 }
-h1 { font-size: 18px; margin: 0 0 8px; }
-.meta { color: var(--pin-muted); font-size: 13px; display: flex; gap: 16px; flex-wrap: wrap; }
+h1 { font: var(--dsw-font-markdown-h1); margin: 0 0 8px; }
+.meta { color: var(--dsw-alias-label-tertiary); font: var(--dsw-font-xs-13); display: flex; gap: 16px; flex-wrap: wrap; }
 .meta span { white-space: nowrap; }
-.block { margin: 0 0 18px; }
-p { margin: 0 0 10px; }
-ul, ol { margin: 0 0 10px; padding-left: 22px; }
-ul { list-style-type: disc; }
-ol { list-style-type: decimal; }
-blockquote {
-  margin: 0 0 10px;
-  padding: 4px 14px;
-  border-left: 3px solid var(--pin-border);
+
+/* Markdown body, mirroring MarkdownText.module.css */
+.pin-markdown { min-width: 0; overflow-wrap: anywhere; font: var(--dsw-font-markdown-base); color: var(--dsw-alias-label-primary); }
+.pin-markdown strong { font-weight: 600; }
+.pin-markdown h1 { font: var(--dsw-font-markdown-h1); margin: 32px 0 16px; }
+.pin-markdown h2 { font: var(--dsw-font-markdown-h2); margin: 32px 0 16px; }
+.pin-markdown h3 { font: var(--dsw-font-markdown-h3); margin: 32px 0 16px; }
+.pin-markdown h4 { font: var(--dsw-font-markdown-h4); margin: 16px 0; }
+.pin-markdown :where(h5, h6) { font: var(--dsw-font-markdown-base-strong); margin: 16px 0; }
+.pin-markdown :where(h1, h2, h3, h4, h5, h6) strong { font-weight: inherit; }
+.pin-markdown p { margin: 16px 0; }
+.pin-markdown :where(h4, h5, h6) + :where(ul, ol) { margin-top: 8px; }
+.pin-markdown :where(h4, h5, h6):has(+ :where(ul, ol)) { margin-bottom: 8px; }
+.pin-markdown a {
+  color: var(--dsw-alias-state-business-primary);
+  text-decoration: none;
+  border-left: 3px solid rgb(255 255 255 / 0);
+  border-right: 3px solid rgb(255 255 255 / 0);
+  border-top: 2px solid rgb(255 255 255 / 0);
+  border-bottom: 2px solid rgb(255 255 255 / 0);
+  margin-left: -3px;
+  margin-right: -3px;
 }
-a { color: var(--pin-link); }
-code {
-  font-family: "Cascadia Code", Consolas, "Courier New", monospace;
-  font-size: 13px;
-  background: var(--pin-code-bg);
-  border: 1px solid var(--pin-border);
-  border-radius: 4px;
-  padding: 1px 5px;
+.pin-markdown a:hover, .pin-markdown a:focus {
+  outline: none;
+  text-decoration: underline var(--dsw-alias-state-business-primary);
 }
-pre.code {
-  background: var(--pin-code-bg);
-  border: 1px solid var(--pin-border);
-  border-radius: 8px;
+.pin-markdown :where(ul, ol) { margin: 16px 0; padding-left: 18px; }
+.pin-markdown li:not(:first-child) { margin-top: 6px; }
+.pin-markdown li > :where(ul, ol) { margin-top: 4px; }
+.pin-markdown li::marker { line-height: 28px; color: var(--dsw-alias-label-secondary); }
+.pin-markdown :where(ul, ol) ol { list-style-position: inside; padding-left: 0; }
+.pin-markdown :where(ul, ol) ol li p { display: inline; }
+.pin-markdown li > p { margin: 8px 0; }
+.pin-markdown li > *:first-child { margin-top: 0; }
+.pin-markdown hr { display: block; border: none; height: 1px; margin: 32px 0; background: var(--dsw-alias-border-l2); }
+.pin-markdown blockquote {
+  border-left: 2px solid var(--dsw-alias-label-caption);
+  margin: 16px 0 0;
+  padding-left: 14px;
+}
+.pin-markdown pre { margin: 16px 0; font-family: var(--ds-font-family-code); overflow: auto; }
+.pin-markdown :not(pre) > code {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  font: var(--dsw-font-markdown-code);
+  font-family: var(--ds-font-family-code);
+  font-size: 0.875em !important;
+  background-color: var(--dsw-alias-markdown-inline-code);
+  border-radius: 6px;
+  padding: 0 5px;
+}
+.pin-markdown :where(h1, h2, h3, h4, h5, h6) code { font: inherit; font-family: var(--ds-font-family-code); }
+.pin-markdown > *:first-child, .pin-markdown p:first-child { margin-top: 0 !important; }
+.pin-markdown > *:last-child, .pin-markdown p:last-child { margin-bottom: 0 !important; }
+
+/* Fenced code block, mirroring CodeBlock surface */
+.pin-code-block {
+  margin: 16px 0;
   padding: 12px 14px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 12px;
+  background: var(--dsw-alias-markdown-code-block);
+  font: var(--dsw-font-markdown-code-block);
   overflow: auto;
 }
-pre.code code { background: none; border: none; padding: 0; white-space: pre-wrap; word-break: break-word; }
-code[data-lang]::before {
+.pin-code-block code { background: none; border: none; padding: 0; font: inherit; white-space: pre-wrap; word-break: break-word; }
+.pin-code-block[data-lang] code::before {
   content: attr(data-lang);
   display: block;
-  color: var(--pin-muted);
-  font-size: 11px;
+  color: var(--dsw-alias-label-caption);
+  font: var(--dsw-font-xxs-strong-12);
   margin-bottom: 6px;
   text-transform: uppercase;
   letter-spacing: .04em;
 }
-.reasoning summary { cursor: pointer; color: var(--pin-muted); font-size: 13px; }
-.reasoning-body { border-left: 2px solid var(--pin-border); margin: 8px 0 0; padding-left: 12px; }
-.tool-name { color: var(--pin-muted); font-size: 13px; margin-bottom: 6px; }
-.tool-summary,
-.other-summary {
+
+/* Reasoning row, mirroring ReasoningRow.module.css */
+.pin-reasoning { margin: 0 0 16px; }
+.pin-reasoning-summary {
+  display: flex;
+  align-items: center;
   cursor: pointer;
-  color: var(--pin-muted);
-  font-size: 13px;
-  margin-bottom: 6px;
+  list-style: none;
+  font-size: 14px;
+  line-height: 24px;
 }
-.tool-summary.error { color: var(--pin-error); }
-.tool-args,
-.tool-result,
-.other pre {
-  margin: 0 0 8px;
-  padding: 10px 12px;
-  background: var(--pin-code-bg);
-  border: 1px solid var(--pin-border);
-  border-radius: 8px;
-  font: 12px/1.5 "Cascadia Code", Consolas, "Courier New", monospace;
+.pin-reasoning-summary::-webkit-details-marker { display: none; }
+.pin-reasoning-title { flex: none; color: var(--dsw-alias-label-secondary); font-weight: 400; }
+.pin-reasoning-sep { flex: none; width: 2px; height: 2px; margin: 0 8px; border-radius: 1px; background: var(--dsw-alias-label-caption); }
+.pin-reasoning-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pin-reasoning-body {
+  padding: 4px 0 4px 22px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 14px;
+  line-height: 24px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Tool row, mirroring ToolRow.module.css summary row */
+.pin-tool { margin: 0 0 16px; }
+.pin-tool-summary {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+  font-size: 14px;
+  line-height: 24px;
+  color: var(--dsw-alias-label-secondary);
+}
+.pin-tool-summary::-webkit-details-marker { display: none; }
+.pin-tool-summary.error { color: var(--dsw-alias-state-error-primary); }
+.pin-tool-title { font-weight: 400; }
+.pin-tool-args,
+.pin-tool-result,
+.pin-other pre {
+  margin: 4px 0 4px 4px;
+  padding: 12px 16px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 12px;
+  background: var(--dsw-alias-markdown-code-block);
+  font: var(--dsw-font-markdown-code-block-small);
+  color: var(--dsw-alias-label-secondary);
   white-space: pre-wrap;
   word-break: break-word;
   overflow: auto;
 }
-.tool-result.error { border-color: var(--pin-error); }
-.tool-error { color: var(--pin-error); font-size: 12px; margin-top: 6px; }
-.image { color: var(--pin-muted); font-style: italic; }
-.empty { color: var(--pin-muted); }
+.pin-tool-result.error { border-color: var(--dsw-alias-state-error-primary); color: var(--dsw-alias-state-error-primary); }
+.pin-tool-error { color: var(--dsw-alias-state-error-primary); font: var(--dsw-font-xs-13); margin: 6px 0 0 4px; }
+
+.pin-other { margin: 0 0 16px; }
+.pin-other-summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+  margin-bottom: 6px;
+}
+.pin-other-summary::-webkit-details-marker { display: none; }
+
+.pin-image { color: var(--dsw-alias-label-tertiary); font-style: italic; }
+.empty { color: var(--dsw-alias-label-tertiary); }
 `
 
 /** Build the full popup document for one pinned turn. */
-function buildDocument(pin: PinTurnView, t: PinWindowText): string {
+function buildDocument(pin: PinTurnView, t: PinWindowText, stylesheets: readonly string[]): string {
   const dark = typeof document !== 'undefined' && document.body.hasAttribute('data-ds-dark-theme')
   const title = t('window.title')
   const model = pin.model
@@ -395,15 +476,20 @@ function buildDocument(pin: PinTurnView, t: PinWindowText): string {
       return renderToolRoot(item.root, t)
     }).join('')
 
+  const styleLinks = stylesheets
+    .map(href => `<link rel="stylesheet" href="${escapeHtml(href)}" />`)
+    .join('')
+
   return `<!doctype html>
-<html lang="zh-CN" data-dark="${dark ? 'true' : 'false'}">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(title)}</title>
+  ${styleLinks}
   <style>${POPUP_CSS}</style>
 </head>
-<body>
+<body${dark ? ' data-ds-dark-theme' : ''}>
   <main>
     <header>
       <h1>${escapeHtml(title)}</h1>
@@ -425,7 +511,10 @@ function buildDocument(pin: PinTurnView, t: PinWindowText): string {
  * @param t - dictionary access (namespace `pin`).
  */
 export function openPinWindow(pin: PinTurnView, t: PinWindowText): void {
-  const html = buildDocument(pin, t)
+  const stylesheets = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
+    .map(link => link.getAttribute('href'))
+    .filter((href): href is string => typeof href === 'string')
+  const html = buildDocument(pin, t, stylesheets)
   const win = window.open('', '_blank', 'width=760,height=900,menubar=no,toolbar=no,location=no,status=no')
   if (win === null) return
   win.document.open()
