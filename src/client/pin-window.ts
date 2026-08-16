@@ -1,16 +1,42 @@
 /**
  * Display-only pin window: builds a self-contained HTML document for one
- * finalized assistant message and opens it in a separate popup window.
- * No framework, no controls, no storage — just the selected message.
+ * finalized assistant message turn and opens it in a separate popup window.
+ * The window renders the same turn content the chat card shows — every
+ * assistant step (text/reasoning/images) and every tool call with its result.
+ * No framework, no controls, no storage — just the selected message turn.
  * @module dsh-plugin-pin-window/client/pin-window
  */
 
-import type { AssistantBlock, AssistantMessageNode } from '@deepseek-ai/dsh-client-runtime/client'
+import type {
+  AssistantBlock, ToolCallBlock, ToolResultNode,
+} from '@deepseek-ai/dsh-client-runtime/client'
 import type { MessagePinKey } from './locales.ts'
 
 /** Dictionary access shape: only the keys this module needs. */
 export interface PinWindowText {
   (key: MessagePinKey): string
+}
+
+/** One assistant step of the pinned turn. */
+export interface PinAssistantItem {
+  kind: 'assistant'
+  blocks: readonly AssistantBlock[]
+}
+
+/** One tool call root (running or settled) of the pinned turn. */
+export interface PinToolItem {
+  kind: 'tool'
+  root: ToolCallBlock
+}
+
+export type PinTurnItem = PinAssistantItem | PinToolItem
+
+/** Everything the popup needs to render one pinned turn. */
+export interface PinTurnView {
+  turn: number
+  model: string
+  time: number
+  items: readonly PinTurnItem[]
 }
 
 /** Escape text for safe HTML insertion. */
@@ -218,6 +244,41 @@ function renderBlock(block: AssistantBlock, t: PinWindowText): string {
   }
 }
 
+/** Render one assistant step's visible blocks (tool-call heads are tool rows). */
+function renderAssistantItem(blocks: readonly AssistantBlock[], t: PinWindowText): string {
+  return blocks
+    .filter(block => block.kind !== 'tool-call')
+    .map(block => renderBlock(block, t))
+    .join('')
+}
+
+/** Extract readable text from a tool result's content blocks. */
+function toolContentText(content: readonly unknown[]): string {
+  return content.map((block) => {
+    if (typeof block !== 'object' || block === null) return JSON.stringify(block)
+    const record = block as Record<string, unknown>
+    if (record.type === 'text' && typeof record.text === 'string') return record.text
+    return JSON.stringify(block)
+  }).join('\n')
+}
+
+/** Render one tool call root: running call head or settled call + result. */
+function renderToolRoot(root: ToolCallBlock, t: PinWindowText): string {
+  if ('kind' in root && root.kind === 'tool-result') {
+    const settled = root as ToolResultNode
+    const name = settled.call?.name ?? settled.callId
+    const args = settled.call?.argsRaw ?? ''
+    const content = toolContentText(settled.content)
+    const errorClass = settled.isError ? ' error' : ''
+    const errorLine = settled.isError && settled.error !== undefined
+      ? `<div class="tool-error">${escapeHtml(`${settled.error.name}: ${settled.error.code}`)}</div>`
+      : ''
+    return `<section class="block tool"><div class="tool-name">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(name)}</div>${args.length > 0 ? `<pre class="tool-args">${escapeHtml(args)}</pre>` : ''}${content.length > 0 ? `<pre class="tool-result${errorClass}">${escapeHtml(content)}</pre>` : ''}${errorLine}</section>`
+  }
+  const running = root as { name: string; argsRaw: string }
+  return `<section class="block tool running"><div class="tool-name">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(running.name)}</div><pre class="tool-args">${escapeHtml(running.argsRaw)}</pre></section>`
+}
+
 /** The popup document stylesheet (theme follows the opener). */
 const POPUP_CSS = `
 :root {
@@ -227,6 +288,7 @@ const POPUP_CSS = `
   --pin-border: #e5e7eb;
   --pin-code-bg: #f6f7f9;
   --pin-link: #2563eb;
+  --pin-error: #c62828;
 }
 :root[data-dark="true"] {
   --pin-bg: #17181a;
@@ -235,6 +297,7 @@ const POPUP_CSS = `
   --pin-border: #2a2c30;
   --pin-code-bg: #202225;
   --pin-link: #7aa2f7;
+  --pin-error: #ff6b6b;
 }
 * { box-sizing: border-box; }
 body {
@@ -291,8 +354,9 @@ code[data-lang]::before {
 .reasoning summary { cursor: pointer; color: var(--pin-muted); font-size: 13px; }
 .reasoning-body { border-left: 2px solid var(--pin-border); margin: 8px 0 0; padding-left: 12px; }
 .tool-name { color: var(--pin-muted); font-size: 13px; margin-bottom: 6px; }
-.tool-args {
-  margin: 0;
+.tool-args,
+.tool-result {
+  margin: 0 0 8px;
   padding: 10px 12px;
   background: var(--pin-code-bg);
   border: 1px solid var(--pin-border);
@@ -302,22 +366,25 @@ code[data-lang]::before {
   word-break: break-word;
   overflow: auto;
 }
+.tool-result.error { border-color: var(--pin-error); }
+.tool-error { color: var(--pin-error); font-size: 12px; margin-top: 6px; }
 .image { color: var(--pin-muted); font-style: italic; }
 .empty { color: var(--pin-muted); }
 `
 
-/** Build the full popup document for one assistant message. */
-function buildDocument(node: AssistantMessageNode, t: PinWindowText): string {
+/** Build the full popup document for one pinned turn. */
+function buildDocument(pin: PinTurnView, t: PinWindowText): string {
   const dark = typeof document !== 'undefined' && document.body.hasAttribute('data-ds-dark-theme')
   const title = t('window.title')
-  const model = node.provenance === undefined
-    ? '—'
-    : `${node.provenance.provider} / ${node.provenance.model}`
-  const time = node.time > 0 ? new Date(node.time).toLocaleString() : '—'
+  const model = pin.model
+  const time = pin.time > 0 ? new Date(pin.time).toLocaleString() : '—'
 
-  const body = node.blocks.length === 0
+  const body = pin.items.length === 0
     ? `<p class="empty">${escapeHtml(t('window.empty'))}</p>`
-    : node.blocks.map(block => renderBlock(block, t)).join('')
+    : pin.items.map((item) => {
+      if (item.kind === 'assistant') return renderAssistantItem(item.blocks, t)
+      return renderToolRoot(item.root, t)
+    }).join('')
 
   return `<!doctype html>
 <html lang="zh-CN" data-dark="${dark ? 'true' : 'false'}">
@@ -344,12 +411,12 @@ function buildDocument(node: AssistantMessageNode, t: PinWindowText): string {
 }
 
 /**
- * Open the display-only pin window for a selected assistant message.
- * @param node - the finalized assistant message to show.
+ * Open the display-only pin window for a selected assistant message turn.
+ * @param pin - the pinned turn content.
  * @param t - dictionary access (namespace `pin`).
  */
-export function openPinWindow(node: AssistantMessageNode, t: PinWindowText): void {
-  const html = buildDocument(node, t)
+export function openPinWindow(pin: PinTurnView, t: PinWindowText): void {
+  const html = buildDocument(pin, t)
   const win = window.open('', '_blank', 'width=760,height=900,menubar=no,toolbar=no,location=no,status=no')
   if (win === null) return
   win.document.open()
