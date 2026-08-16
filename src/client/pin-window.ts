@@ -236,11 +236,11 @@ function renderBlock(block: AssistantBlock, t: PinWindowText): string {
     case 'reasoning':
       return `<details class="block reasoning"><summary>${escapeHtml(t('window.reasoning'))}</summary><div class="reasoning-body">${renderMarkdown(block.text)}</div></details>`
     case 'tool-call':
-      return `<section class="block tool"><div class="tool-name">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(block.name)}</div><pre class="tool-args">${escapeHtml(block.argsRaw)}</pre></section>`
+      return `<details class="block tool"><summary class="tool-summary">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(block.name)}</summary><pre class="tool-args">${escapeHtml(block.argsRaw)}</pre></details>`
     case 'image':
       return `<section class="block image">${escapeHtml(t('window.image'))}</section>`
     case 'other':
-      return `<section class="block other"><pre>${escapeHtml(JSON.stringify(block.block, null, 2))}</pre></section>`
+      return `<details class="block other"><summary class="other-summary">${escapeHtml(t('window.other'))}</summary><pre>${escapeHtml(JSON.stringify(block.block, null, 2))}</pre></details>`
   }
 }
 
@@ -262,7 +262,7 @@ function toolContentText(content: readonly unknown[]): string {
   }).join('\n')
 }
 
-/** Render one tool call root: running call head or settled call + result. */
+/** Render one tool call root: collapsible call head + args + result. */
 function renderToolRoot(root: ToolCallBlock, t: PinWindowText): string {
   if ('kind' in root && root.kind === 'tool-result') {
     const settled = root as ToolResultNode
@@ -273,10 +273,10 @@ function renderToolRoot(root: ToolCallBlock, t: PinWindowText): string {
     const errorLine = settled.isError && settled.error !== undefined
       ? `<div class="tool-error">${escapeHtml(`${settled.error.name}: ${settled.error.code}`)}</div>`
       : ''
-    return `<section class="block tool"><div class="tool-name">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(name)}</div>${args.length > 0 ? `<pre class="tool-args">${escapeHtml(args)}</pre>` : ''}${content.length > 0 ? `<pre class="tool-result${errorClass}">${escapeHtml(content)}</pre>` : ''}${errorLine}</section>`
+    return `<details class="block tool"><summary class="tool-summary${errorClass}">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(name)}</summary>${args.length > 0 ? `<pre class="tool-args">${escapeHtml(args)}</pre>` : ''}${content.length > 0 ? `<pre class="tool-result${errorClass}">${escapeHtml(content)}</pre>` : ''}${errorLine}</details>`
   }
   const running = root as { name: string; argsRaw: string }
-  return `<section class="block tool running"><div class="tool-name">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(running.name)}</div><pre class="tool-args">${escapeHtml(running.argsRaw)}</pre></section>`
+  return `<details class="block tool running"><summary class="tool-summary">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(running.name)}</summary><pre class="tool-args">${escapeHtml(running.argsRaw)}</pre></details>`
 }
 
 /** The popup document stylesheet (theme follows the opener). */
@@ -354,8 +354,17 @@ code[data-lang]::before {
 .reasoning summary { cursor: pointer; color: var(--pin-muted); font-size: 13px; }
 .reasoning-body { border-left: 2px solid var(--pin-border); margin: 8px 0 0; padding-left: 12px; }
 .tool-name { color: var(--pin-muted); font-size: 13px; margin-bottom: 6px; }
+.tool-summary,
+.other-summary {
+  cursor: pointer;
+  color: var(--pin-muted);
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.tool-summary.error { color: var(--pin-error); }
 .tool-args,
-.tool-result {
+.tool-result,
+.other pre {
   margin: 0 0 8px;
   padding: 10px 12px;
   background: var(--pin-code-bg);
