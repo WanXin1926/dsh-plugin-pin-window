@@ -593,6 +593,7 @@ function buildDocument(
   t: PinWindowText,
   stylesheets: readonly string[],
   cloneHtml: string,
+  pluginCss: string,
 ): string {
   const dark = typeof document !== 'undefined' && document.body.hasAttribute('data-ds-dark-theme')
   const title = t('window.title')
@@ -617,12 +618,13 @@ function buildDocument(
     .join('')
 
   return `<!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" style="color-scheme: ${dark ? 'dark' : 'light'}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(title)}</title>
   ${styleLinks}
+  <style data-pin-copy>${pluginCss}</style>
   <style>${POPUP_CSS}</style>
 </head>
 <body${dark ? ' data-ds-dark-theme' : ''}>
@@ -651,8 +653,13 @@ export function openPinWindow(pin: PinTurnView, t: PinWindowText): void {
   const stylesheets = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
     .map(link => link.getAttribute('href'))
     .filter((href): href is string => typeof href === 'string')
+  // Plugin bundles inject their CSS Modules as <style> tags (not <link>);
+  // copying them is what makes the cloned component DOM look like the original.
+  const pluginCss = Array.from(document.querySelectorAll('style'))
+    .map(style => style.textContent ?? '')
+    .join('\n')
   const cloneHtml = buildCloneHtml(pin.nodeKeys)
-  const html = buildDocument(pin, t, stylesheets, cloneHtml)
+  const html = buildDocument(pin, t, stylesheets, cloneHtml, pluginCss)
   const win = window.open('', '_blank', 'width=760,height=900,menubar=no,toolbar=no,location=no,status=no')
   if (win === null) return
   win.document.open()
