@@ -18,7 +18,7 @@ DeepSeek Harness 网页版插件：在每条助手消息下方的操作条里新
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add git+https://github.com/<你的用户名>/dsh-plugin-pin-window.git
+dsh plugin --profile web add git+https://github.com/WanXin1926/dsh-plugin-pin-window.git
 ```
 
 然后重启 `dsh web`，刷新页面即可。
