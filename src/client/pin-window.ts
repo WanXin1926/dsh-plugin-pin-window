@@ -40,6 +40,8 @@ export interface PinTurnView {
   items: readonly PinTurnItem[]
   /** Files produced by this turn, for inline file-mention resolution. */
   producedFiles: readonly string[]
+  /** Chat-flow keys of the turn's rendered nodes, for DOM cloning. */
+  nodeKeys: readonly string[]
 }
 
 /** Escape text for safe HTML insertion. */
@@ -336,6 +338,19 @@ h1 { font: var(--dsw-font-markdown-h1); margin: 0 0 8px; }
 .meta { color: var(--dsw-alias-label-tertiary); font: var(--dsw-font-xs-13); display: flex; gap: 16px; flex-wrap: wrap; }
 .meta span { white-space: nowrap; }
 
+/* Cloned chat-flow column: same width/rhythm as the original message column. */
+.pin-flow {
+  --dsh-chat-content-width: 748px;
+  --dsh-composer-side-clearance: 16px;
+  max-width: var(--dsh-chat-content-width);
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.pin-flow [hidden] { display: none !important; }
+
 /* Markdown body, mirroring MarkdownText.module.css */
 .pin-markdown { min-width: 0; overflow-wrap: anywhere; font: var(--dsw-font-markdown-base); color: var(--dsw-alias-label-primary); }
 .pin-markdown strong { font-weight: 600; }
@@ -524,19 +539,78 @@ h1 { font: var(--dsw-font-markdown-h1); margin: 0 0 8px; }
 .empty { color: var(--dsw-alias-label-tertiary); }
 `
 
+/** Small script that restores disclosure-row toggling for cloned DOM. */
+const TOGGLE_SCRIPT = `<script>(function () {
+  document.addEventListener('click', function (event) {
+    var row = event.target.closest ? event.target.closest('[data-disclosure-row]') : null
+    if (row === null) return
+    var root = row.parentElement
+    if (root === null) return
+    var body = null
+    for (var i = 0; i < root.children.length; i++) {
+      if (root.children[i] !== row) { body = root.children[i]; break }
+    }
+    if (body === null) return
+    if (body.hasAttribute('hidden')) {
+      body.removeAttribute('hidden')
+      root.setAttribute('data-open', '')
+    } else {
+      body.setAttribute('hidden', '')
+      root.removeAttribute('data-open')
+    }
+  })
+})()</script>`
+
+/**
+ * Clone the live page's already-rendered DOM for the pinned turn. This is
+ * what makes the popup pixel-identical to the original: we copy the same
+ * React-rendered nodes and link the same stylesheets, instead of re-rendering
+ * from data with an approximation.
+ * @param nodeKeys - chat-flow keys of the turn's rendered nodes.
+ * @returns concatenated outerHTML of the cloned seats, or '' when none found.
+ */
+function buildCloneHtml(nodeKeys: readonly string[]): string {
+  const wanted = new Set(nodeKeys)
+  const seats = Array.from(document.querySelectorAll<HTMLElement>('[data-chat-flow-key]'))
+  const parts: string[] = []
+  for (const seat of seats) {
+    const key = seat.getAttribute('data-chat-flow-key')
+    if (key === null || !wanted.has(key)) continue
+    const clone = seat.cloneNode(true) as HTMLElement
+    // The turn-tail keeps its produced-files row; only the interactive action
+    // strip (copy / branch / feedback / pin) is removed.
+    for (const actions of Array.from(clone.querySelectorAll<HTMLElement>('[class*="actions"]'))) {
+      actions.remove()
+    }
+    parts.push(clone.outerHTML)
+  }
+  return parts.join('')
+}
+
 /** Build the full popup document for one pinned turn. */
-function buildDocument(pin: PinTurnView, t: PinWindowText, stylesheets: readonly string[]): string {
+function buildDocument(
+  pin: PinTurnView,
+  t: PinWindowText,
+  stylesheets: readonly string[],
+  cloneHtml: string,
+): string {
   const dark = typeof document !== 'undefined' && document.body.hasAttribute('data-ds-dark-theme')
   const title = t('window.title')
   const model = pin.model
   const time = pin.time > 0 ? new Date(pin.time).toLocaleString() : '—'
 
-  const body = pin.items.length === 0
+  const fallbackBody = pin.items.length === 0
     ? `<p class="empty">${escapeHtml(t('window.empty'))}</p>`
     : pin.items.map((item) => {
       if (item.kind === 'assistant') return renderAssistantItem(item.blocks, t, pin.producedFiles)
       return renderToolRoot(item.root, t)
     }).join('')
+
+  // Primary path: the live page's own rendered DOM. Fallback only when the
+  // live DOM is unavailable (e.g. the flow has been virtualized or detached).
+  const body = cloneHtml.length > 0
+    ? `<div class="pin-flow">${cloneHtml}</div>`
+    : fallbackBody
 
   const styleLinks = stylesheets
     .map(href => `<link rel="stylesheet" href="${escapeHtml(href)}" />`)
@@ -563,6 +637,7 @@ function buildDocument(pin: PinTurnView, t: PinWindowText, stylesheets: readonly
     </header>
     ${body}
   </main>
+  ${TOGGLE_SCRIPT}
 </body>
 </html>`
 }
@@ -576,7 +651,8 @@ export function openPinWindow(pin: PinTurnView, t: PinWindowText): void {
   const stylesheets = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
     .map(link => link.getAttribute('href'))
     .filter((href): href is string => typeof href === 'string')
-  const html = buildDocument(pin, t, stylesheets)
+  const cloneHtml = buildCloneHtml(pin.nodeKeys)
+  const html = buildDocument(pin, t, stylesheets, cloneHtml)
   const win = window.open('', '_blank', 'width=760,height=900,menubar=no,toolbar=no,location=no,status=no')
   if (win === null) return
   win.document.open()

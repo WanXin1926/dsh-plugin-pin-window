@@ -54,10 +54,17 @@ function buildPinView(snapshot: ConversationSnapshot, messageId: string): PinTur
   if (target?.kind !== 'assistant') return undefined
 
   const items: PinTurnItem[] = []
+  const nodeKeys: string[] = []
   const keys = snapshot.chat.locations.getTurn(target.turn)
   for (const key of keys) {
     const viewNode = snapshot.chat.nodes.get(key)
     if (viewNode === undefined) continue
+    // The clone keeps every rendered turn node except user/steering bubbles;
+    // the turn-tail is included (its produced-files row) and its action strip
+    // is removed later during cloning.
+    if (viewNode.kind !== 'user' && viewNode.kind !== 'steering') {
+      nodeKeys.push(key)
+    }
     if (viewNode.kind === 'assistant-step') {
       const data = viewNode.data as { blocks?: readonly AssistantBlock[] }
       if (data.blocks !== undefined && data.blocks.length > 0) {
@@ -83,6 +90,7 @@ function buildPinView(snapshot: ConversationSnapshot, messageId: string): PinTur
     time: target.time,
     items,
     producedFiles: collectProducedFiles(items),
+    nodeKeys,
   }
 }
 
