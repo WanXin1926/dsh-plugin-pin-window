@@ -543,9 +543,10 @@ h1 { font: var(--dsw-font-markdown-h1); margin: 0 0 8px; }
 
 /** Build the popup script: collapse bodies by default, restore reasoning
  *  summaries, and wire disclosure-row toggling for the cloned DOM. */
-function buildToggleScript(firstLines: readonly string[]): string {
+function buildToggleScript(firstLines: readonly string[], leadings: readonly string[]): string {
   return `<script>(function () {
   var firstLines = ${JSON.stringify(firstLines)}
+  var leadings = ${JSON.stringify(leadings)}
   var rows = document.querySelectorAll('[data-disclosure-row]')
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i]
@@ -558,6 +559,10 @@ function buildToggleScript(firstLines: readonly string[]): string {
     if (body !== null) {
       body.setAttribute('hidden', '')
       root.removeAttribute('data-open')
+    }
+    var leading = row.firstElementChild
+    if (leading !== null && leadings[i] !== undefined) {
+      leading.innerHTML = leadings[i]
     }
   }
   var thinkRows = document.querySelectorAll('[data-variant="think"] [data-disclosure-row]')
@@ -627,30 +632,26 @@ function cloneSeats(seats: readonly HTMLElement[]): string {
   return parts.join('')
 }
 
-/**
- * Expand every collapsed disclosure row in the selected seats so React
- * materializes the bodies into the DOM before cloning. Returns the rows that
- * were expanded, so the caller can collapse them again afterwards.
- */
-function expandDisclosureRows(seats: readonly HTMLElement[]): HTMLElement[] {
-  const expandedRows: HTMLElement[] = []
-  for (const seat of seats) {
-    for (const row of Array.from(seat.querySelectorAll<HTMLElement>('[data-disclosure-row]'))) {
-      const root = row.parentElement
-      if (root === null || root.hasAttribute('data-open')) continue
-      if (!row.hasAttribute('data-expandable')) continue
-      row.click()
-      expandedRows.push(row)
-    }
-  }
-  return expandedRows
+/** All disclosure rows inside the selected seats, in DOM order. */
+function disclosureRows(seats: readonly HTMLElement[]): HTMLElement[] {
+  return seats.flatMap(seat =>
+    Array.from(seat.querySelectorAll<HTMLElement>('[data-disclosure-row]')))
 }
 
-/** Collapse the rows that were expanded for cloning, restoring the live page. */
-function collapseDisclosureRows(rows: readonly HTMLElement[]): void {
-  for (const row of rows) {
-    if (row.isConnected) row.click()
-  }
+/** Whether a disclosure row's root is currently open. */
+function rowIsOpen(row: HTMLElement): boolean {
+  return row.parentElement?.hasAttribute('data-open') === true
+}
+
+/** The collapsed leading markup (idle tool icon + hover chevron). */
+function leadingHtml(row: HTMLElement): string {
+  const leading = row.firstElementChild as HTMLElement | null
+  return leading?.innerHTML ?? ''
+}
+
+/** Wait for React to re-render after programmatic clicks. */
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 /** Build the full popup document for one pinned turn. */
@@ -660,6 +661,7 @@ function buildDocument(
   stylesheets: readonly string[],
   cloneHtml: string,
   pluginCss: string,
+  leadings: readonly string[],
 ): string {
   const dark = typeof document !== 'undefined' && document.body.hasAttribute('data-ds-dark-theme')
   const title = t('window.title')
@@ -705,7 +707,7 @@ function buildDocument(
     </header>
     ${body}
   </main>
-  ${buildToggleScript(pin.reasoningFirstLines)}
+  ${buildToggleScript(pin.reasoningFirstLines, leadings)}
 </body>
 </html>`
 }
@@ -727,16 +729,44 @@ export async function openPinWindow(pin: PinTurnView, t: PinWindowText): Promise
 
   // Collapsed rows have no body in the DOM (React only renders children when
   // open). Expand them first, let React materialize the bodies, then clone;
-  // finally restore the live page to its previous collapsed state.
+  // finally restore the live page to its previous collapsed state. While all
+  // rows are collapsed, also capture each row's idle leading (tool icon +
+  // hover chevron) so the popup can restore the collapsed icons too.
   const seats = findTurnSeats(pin.nodeKeys)
-  const expandedRows = expandDisclosureRows(seats)
-  if (expandedRows.length > 0) {
-    await new Promise(resolve => setTimeout(resolve, 250))
-  }
-  const cloneHtml = cloneSeats(seats)
-  collapseDisclosureRows(expandedRows)
+  const rows = disclosureRows(seats)
 
-  const html = buildDocument(pin, t, stylesheets, cloneHtml, pluginCss)
+  // Phase A: collapse any currently-open rows so every row exposes its
+  // collapsed leading.
+  const originallyOpen = new Set<HTMLElement>()
+  for (const row of rows) {
+    if (rowIsOpen(row)) {
+      originallyOpen.add(row)
+      row.click()
+    }
+  }
+  if (originallyOpen.size > 0) await delay(200)
+
+  // Phase B: capture collapsed leading markup for every row, in DOM order.
+  const leadings = rows.map(leadingHtml)
+
+  // Phase C: expand every expandable row so React materializes the bodies.
+  for (const row of rows) {
+    if (row.hasAttribute('data-expandable') && !rowIsOpen(row)) {
+      row.click()
+    }
+  }
+  if (rows.some(row => row.hasAttribute('data-expandable'))) await delay(250)
+
+  const cloneHtml = cloneSeats(seats)
+
+  // Phase D: restore the live page to its previous state.
+  for (const row of rows) {
+    if (!row.isConnected) continue
+    if (originallyOpen.has(row)) continue // already back to open after phase C
+    if (row.hasAttribute('data-expandable') && rowIsOpen(row)) row.click()
+  }
+
+  const html = buildDocument(pin, t, stylesheets, cloneHtml, pluginCss, leadings)
   const win = window.open('', '_blank', 'width=760,height=900,menubar=no,toolbar=no,location=no,status=no')
   if (win === null) return
   win.document.open()
