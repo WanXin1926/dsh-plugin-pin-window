@@ -578,8 +578,76 @@ function buildToggleScript(firstLines: readonly string[], leadings: readonly str
     thinkRow.appendChild(sep)
     thinkRow.appendChild(summary)
   }
+  function localCopyText(button) {
+    var codeBlock = button.closest ? button.closest('.md-code-block') : null
+    if (codeBlock !== null) {
+      var pre = codeBlock.querySelector('pre')
+      if (pre !== null) return pre.textContent || ''
+    }
+    var container = button.parentElement
+    while (container !== null && container !== document.body) {
+      var candidate = container.querySelector('pre')
+      if (candidate !== null) return candidate.textContent || ''
+      container = container.parentElement
+    }
+    return null
+  }
+
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    try { document.execCommand('copy') } catch (err) { /* noop */ }
+    document.body.removeChild(ta)
+  }
+
+  function showCopied(button) {
+    var old = button.textContent
+    button.textContent = '复制成功'
+    window.setTimeout(function () { button.textContent = old }, 1000)
+  }
+
+  function localCopy(button, text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { showCopied(button) }, function () {
+        fallbackCopy(text)
+        showCopied(button)
+      })
+    } else {
+      fallbackCopy(text)
+      showCopied(button)
+    }
+  }
+
+  function forward(button) {
+    if (window.opener === null || !window.opener.postMessage) return
+    var seat = button.closest ? button.closest('[data-chat-flow-key]') : null
+    var seatKey = seat === null ? '' : seat.getAttribute('data-chat-flow-key')
+    var btnId = button.getAttribute('data-pin-btn')
+    if (seatKey === null || btnId === null) return
+    window.opener.postMessage({ dshPinWindow: true, seatKey: seatKey, btnId: btnId }, '*')
+  }
+
   document.addEventListener('click', function (event) {
-    var row = event.target.closest ? event.target.closest('[data-disclosure-row]') : null
+    var target = event.target
+    var button = target && target.closest ? target.closest('button') : null
+    if (button !== null && button.hasAttribute('data-pin-btn')) {
+      event.stopPropagation()
+      var label = (button.textContent || '').trim()
+      if (label === '复制' || label === '复制成功' || label === 'Copy' || label === 'Copied') {
+        var text = localCopyText(button)
+        if (text !== null) {
+          localCopy(button, text)
+          return
+        }
+      }
+      forward(button)
+      return
+    }
+    var row = target && target.closest ? target.closest('[data-disclosure-row]') : null
     if (row === null) return
     var root = row.parentElement
     if (root === null) return
@@ -621,6 +689,12 @@ function findTurnSeats(nodeKeys: readonly string[]): HTMLElement[] {
 function cloneSeats(seats: readonly HTMLElement[]): string {
   const parts: string[] = []
   for (const seat of seats) {
+    // Stamp source buttons with stable ids so the popup can forward clicks
+    // back to the opener's real React handlers.
+    const buttons = Array.from(seat.querySelectorAll<HTMLButtonElement>('button'))
+    buttons.forEach((button, index) => {
+      button.setAttribute('data-pin-btn', `b${index}`)
+    })
     const clone = seat.cloneNode(true) as HTMLElement
     // The turn-tail keeps its produced-files row; only the interactive action
     // strip (copy / branch / feedback / pin) is removed.
@@ -772,10 +846,7 @@ export async function openPinWindow(pin: PinTurnView, t: PinWindowText): Promise
   win.document.open()
   win.document.write(html)
   win.document.close()
-  try {
-    win.opener = null
-  } catch {
-    // Cross-origin/security edge case; the window still works without this.
-  }
+  // Keep window.opener so the popup can forward file-open / Inspect / other
+  // button clicks back to the opener's real React handlers.
   win.focus()
 }
