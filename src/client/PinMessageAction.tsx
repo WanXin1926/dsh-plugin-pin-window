@@ -54,7 +54,11 @@ function collectProducedFiles(items: readonly PinTurnItem[]): string[] {
  * @param messageId - the selected assistant message id.
  * @returns the turn content to render, or undefined when the message is gone.
  */
-function buildPinView(snapshot: ConversationSnapshot, messageId: string): PinTurnView | undefined {
+function buildPinView(
+  snapshot: ConversationSnapshot,
+  messageId: string,
+  sessionId: string,
+): PinTurnView | undefined {
   const target = snapshot.nodes.find(candidate =>
     candidate.kind === 'assistant' && candidate.messageId === messageId)
   if (target?.kind !== 'assistant') return undefined
@@ -93,6 +97,7 @@ function buildPinView(snapshot: ConversationSnapshot, messageId: string): PinTur
   }
 
   return {
+    sessionId,
     turn: target.turn,
     model: target.provenance === undefined
       ? '—'
@@ -111,8 +116,8 @@ function buildPinView(snapshot: ConversationSnapshot, messageId: string): PinTur
  * the namespace-bound translation seat.
  * @returns the pin button.
  */
-export function PinMessageAction({ messageId, useSession, t }: PinMessageActionProps) {
-  const pin = useSession(snapshot => buildPinView(snapshot, messageId))
+export function PinMessageAction({ messageId, useSession, sessionId, t }: PinMessageActionProps) {
+  const pin = useSession(snapshot => buildPinView(snapshot, messageId, sessionId))
 
   const label = t('action.pin')
   const open = useCallback(() => {

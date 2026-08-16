@@ -22,56 +22,90 @@ export type { MessagePinKey } from './locales.ts'
 /** Dictionary namespace owned by this plugin. */
 const NS = 'pin'
 
-/** Required services: the slot registry and the copy. */
-export const inject = ['slots', 'locale']
+/** Required services: the slot registry, the copy, and session navigation. */
+export const inject = ['slots', 'locale', 'sessions']
 
 /** Escape a value for safe use inside a CSS attribute selector string. */
 function escapeAttr(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
 
-/** Find a stamped button in a seat, expanding collapsed rows if needed. */
-function findStampedButton(seat: Element, btnId: string): HTMLButtonElement | null {
-  return seat.querySelector<HTMLButtonElement>(`[data-pin-btn="${escapeAttr(btnId)}"]`)
+/** Find a chat-flow seat by its key. */
+function findSeat(seatKey: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`[data-chat-flow-key="${escapeAttr(seatKey)}"]`)
 }
 
-/** Handle a forwarded button click from a pin popup. */
-function handlePinWindowMessage(event: MessageEvent): void {
-  const data = event.data as { dshPinWindow?: boolean; seatKey?: string; btnId?: string } | null
-  if (data === null || data.dshPinWindow !== true) return
-  if (typeof data.seatKey !== 'string' || typeof data.btnId !== 'string') return
-  if (event.origin !== window.location.origin) return
+/** Map a forwarded `b<n>` button id back to the nth button in the seat. */
+function findButtonByIndex(seat: Element, btnId: string): HTMLButtonElement | null {
+  const match = /^b(\d+)$/.exec(btnId)
+  if (match === null) return null
+  const index = Number(match[1])
+  return Array.from(seat.querySelectorAll<HTMLButtonElement>('button'))[index] ?? null
+}
 
-  const seat = document.querySelector<HTMLElement>(`[data-chat-flow-key="${escapeAttr(data.seatKey)}"]`)
-  if (seat === null) return
+/** Small promise delay. */
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
 
-  const direct = findStampedButton(seat, data.btnId)
-  if (direct !== null) {
-    direct.click()
-    return
-  }
-
-  // The button lives in a collapsed disclosure body (e.g. Inspect). Expand
-  // the seat's collapsed rows, let React materialize the button, click it,
-  // then restore the rows that were collapsed before.
+/**
+ * Expand the seat's collapsed rows so the DOM matches the popup clone's
+ * all-expanded state, click the button at the forwarded index, then restore
+ * the rows that were collapsed before.
+ */
+async function clickForwardedButton(seat: HTMLElement, btnId: string): Promise<boolean> {
   const rows = Array.from(seat.querySelectorAll<HTMLElement>('[data-disclosure-row][data-expandable]'))
   const originallyCollapsed = rows.filter(row =>
     !(row.parentElement?.hasAttribute('data-open') ?? false))
   for (const row of originallyCollapsed) row.click()
+  if (originallyCollapsed.length > 0) await delay(200)
 
-  window.setTimeout(() => {
-    const button = findStampedButton(seat, data.btnId)
-    if (button !== null) {
-      button.click()
-      window.setTimeout(() => {
-        for (const row of originallyCollapsed) {
-          if (row.isConnected && (row.parentElement?.hasAttribute('data-open') ?? false)) {
-            row.click()
-          }
-        }
-      }, 160)
+  const button = findButtonByIndex(seat, btnId)
+  if (button === null) return false
+  button.click()
+
+  if (originallyCollapsed.length > 0) {
+    await delay(160)
+    for (const row of originallyCollapsed) {
+      if (row.isConnected && (row.parentElement?.hasAttribute('data-open') ?? false)) {
+        row.click()
+      }
     }
-  }, 200)
+  }
+  return true
+}
+
+/** Handle a forwarded button click from a pin popup. */
+async function handlePinWindowMessage(ctx: ClientContext, event: MessageEvent): Promise<void> {
+  const data = event.data as {
+    dshPinWindow?: boolean
+    sessionId?: string
+    seatKey?: string
+    btnId?: string
+  } | null
+  if (data === null || data.dshPinWindow !== true) return
+  if (typeof data.sessionId !== 'string' || typeof data.seatKey !== 'string' || typeof data.btnId !== 'string') return
+  if (event.origin !== window.location.origin) return
+
+  // The opener may have refreshed or switched sessions. Navigate back to the
+  // session that owns the pinned message before resolving its seat.
+  const open = ctx.sessions.open as unknown as (id: string) => void
+  const sessionDeadline = Date.now() + 3000
+  while (ctx.sessions.list.getSnapshot().current !== data.sessionId) {
+    if (Date.now() > sessionDeadline) return
+    try { open(data.sessionId) } catch { /* session not in the list yet; retry */ }
+    await delay(150)
+  }
+
+  let seat = findSeat(data.seatKey)
+  const seatDeadline = Date.now() + 3000
+  while (seat === null && Date.now() < seatDeadline) {
+    await delay(150)
+    seat = findSeat(data.seatKey)
+  }
+  if (seat === null) return
+
+  await clickForwardedButton(seat, data.btnId)
 }
 
 /**
@@ -83,8 +117,9 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-message-pin: dictionaries')
 
   ctx.effect(() => {
-    window.addEventListener('message', handlePinWindowMessage)
-    return () => { window.removeEventListener('message', handlePinWindowMessage) }
+    const listener = (event: MessageEvent): void => { void handlePinWindowMessage(ctx, event) }
+    window.addEventListener('message', listener)
+    return () => { window.removeEventListener('message', listener) }
   }, 'ui-message-pin: popup click forwarder')
 
   ctx.slots.inject('conversation.chat.assistant-actions', () => {

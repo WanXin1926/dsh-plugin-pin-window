@@ -34,6 +34,7 @@ export type PinTurnItem = PinAssistantItem | PinToolItem
 
 /** Everything the popup needs to render one pinned turn. */
 export interface PinTurnView {
+  sessionId: string
   turn: number
   model: string
   time: number
@@ -543,10 +544,15 @@ h1 { font: var(--dsw-font-markdown-h1); margin: 0 0 8px; }
 
 /** Build the popup script: collapse bodies by default, restore reasoning
  *  summaries, and wire disclosure-row toggling for the cloned DOM. */
-function buildToggleScript(firstLines: readonly string[], leadings: readonly string[]): string {
+function buildToggleScript(
+  firstLines: readonly string[],
+  leadings: readonly string[],
+  sessionId: string,
+): string {
   return `<script>(function () {
   var firstLines = ${JSON.stringify(firstLines)}
   var leadings = ${JSON.stringify(leadings)}
+  var sessionId = ${JSON.stringify(sessionId)}
   var rows = document.querySelectorAll('[data-disclosure-row]')
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i]
@@ -628,7 +634,7 @@ function buildToggleScript(firstLines: readonly string[], leadings: readonly str
     var seatKey = seat === null ? '' : seat.getAttribute('data-chat-flow-key')
     var btnId = button.getAttribute('data-pin-btn')
     if (seatKey === null || btnId === null) return
-    window.opener.postMessage({ dshPinWindow: true, seatKey: seatKey, btnId: btnId }, '*')
+    window.opener.postMessage({ dshPinWindow: true, sessionId: sessionId, seatKey: seatKey, btnId: btnId }, '*')
   }
 
   document.addEventListener('click', function (event) {
@@ -689,13 +695,14 @@ function findTurnSeats(nodeKeys: readonly string[]): HTMLElement[] {
 function cloneSeats(seats: readonly HTMLElement[]): string {
   const parts: string[] = []
   for (const seat of seats) {
-    // Stamp source buttons with stable ids so the popup can forward clicks
-    // back to the opener's real React handlers.
-    const buttons = Array.from(seat.querySelectorAll<HTMLButtonElement>('button'))
-    buttons.forEach((button, index) => {
+    const clone = seat.cloneNode(true) as HTMLElement
+    // Stamp clone buttons with their source index so the popup can forward a
+    // click as `b<n>`. The opener maps that index back to the same button in
+    // the (possibly re-rendered) live DOM.
+    const cloneButtons = Array.from(clone.querySelectorAll<HTMLButtonElement>('button'))
+    cloneButtons.forEach((button, index) => {
       button.setAttribute('data-pin-btn', `b${index}`)
     })
-    const clone = seat.cloneNode(true) as HTMLElement
     // The turn-tail keeps its produced-files row; only the interactive action
     // strip (copy / branch / feedback / pin) is removed.
     for (const actions of Array.from(clone.querySelectorAll<HTMLElement>('[class*="actions"]'))) {
@@ -781,7 +788,7 @@ function buildDocument(
     </header>
     ${body}
   </main>
-  ${buildToggleScript(pin.reasoningFirstLines, leadings)}
+  ${buildToggleScript(pin.reasoningFirstLines, leadings, pin.sessionId)}
 </body>
 </html>`
 }
