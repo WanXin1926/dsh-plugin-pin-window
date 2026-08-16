@@ -38,6 +38,8 @@ export interface PinTurnView {
   model: string
   time: number
   items: readonly PinTurnItem[]
+  /** Files produced by this turn, for inline file-mention resolution. */
+  producedFiles: readonly string[]
 }
 
 /** Escape text for safe HTML insertion. */
@@ -55,13 +57,32 @@ function safeUrl(url: string): boolean {
   return /^(https?:\/\/|mailto:)/i.test(url)
 }
 
+/** Trailing path segment. */
+function basename(path: string): string {
+  const at = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return at === -1 ? path : path.slice(at + 1)
+}
+
+/** Resolve an inline-code token against the turn's produced files. */
+function resolveFileMention(value: string, producedFiles: readonly string[]): string | undefined {
+  if (producedFiles.includes(value)) return value
+  const matches = producedFiles.filter(path => basename(path) === value)
+  return matches.length === 1 ? matches[0] : undefined
+}
+
 /** Very small markdown renderer for the popup; output is always escaped first. */
-function renderInline(raw: string): string {
+function renderInline(raw: string, producedFiles: readonly string[]): string {
   const codeSpans: string[] = []
   let s = escapeHtml(raw)
 
   // Inline code first, parked in placeholders so later rules ignore it.
+  // A token that resolves to a produced file renders as the original
+  // file-mention chip instead of inert code.
   s = s.replace(/`([^`]+)`/g, (_match, code: string) => {
+    const mention = resolveFileMention(code, producedFiles)
+    if (mention !== undefined) {
+      return `<code class="pin-inline-code"><button type="button" class="pin-file-mention" title="${escapeHtml(mention)}" aria-label="${escapeHtml(mention)}">${code}</button></code>`
+    }
     codeSpans.push(`<code>${code}</code>`)
     return `\u0000${codeSpans.length - 1}\u0000`
   })
@@ -133,7 +154,7 @@ function collectList(lines: string[], start: number, markerTest: (line: string) 
 }
 
 /** Render a markdown block sequence for one text body. */
-export function renderMarkdown(text: string): string {
+export function renderMarkdown(text: string, producedFiles: readonly string[] = []): string {
   const lines = text.replace(/\r\n?/g, '\n').split('\n')
   const out: string[] = []
   let i = 0
@@ -161,7 +182,7 @@ export function renderMarkdown(text: string): string {
     const heading = /^(#{1,6})\s+(.*)$/.exec(line)
     if (heading !== null) {
       const level = heading[1]?.length ?? 0
-      out.push(`<h${level}>${renderInline(heading[2] ?? '')}</h${level}>`)
+      out.push(`<h${level}>${renderInline(heading[2] ?? '', producedFiles)}</h${level}>`)
       i += 1
       continue
     }
@@ -183,7 +204,7 @@ export function renderMarkdown(text: string): string {
           break
         }
       }
-      out.push(renderMarkdown(inner.join('\n')))
+      out.push(renderMarkdown(inner.join('\n'), producedFiles))
       out.push('</blockquote>')
       continue
     }
@@ -193,7 +214,7 @@ export function renderMarkdown(text: string): string {
       const { items, next } = collectList(lines, i, isUlMarker)
       i = next
       out.push('<ul>')
-      for (const item of items) out.push(`<li>${renderInline(item)}</li>`)
+      for (const item of items) out.push(`<li>${renderInline(item, producedFiles)}</li>`)
       out.push('</ul>')
       continue
     }
@@ -203,7 +224,7 @@ export function renderMarkdown(text: string): string {
       const { items, next } = collectList(lines, i, isOlMarker)
       i = next
       out.push('<ol>')
-      for (const item of items) out.push(`<li>${renderInline(item)}</li>`)
+      for (const item of items) out.push(`<li>${renderInline(item, producedFiles)}</li>`)
       out.push('</ol>')
       continue
     }
@@ -220,7 +241,7 @@ export function renderMarkdown(text: string): string {
       paragraph.push(lines[i] ?? '')
       i += 1
     }
-    out.push(`<p>${renderInline(paragraph.join('<br>'))}</p>`)
+    out.push(`<p>${renderInline(paragraph.join('<br>'), producedFiles)}</p>`)
   }
 
   // Join without whitespace so the emitted block structure stays compact like
@@ -230,8 +251,8 @@ export function renderMarkdown(text: string): string {
 }
 
 /** Wrap rendered markdown in the class the popup stylesheet targets. */
-function markdownSection(text: string): string {
-  return `<div class="pin-markdown">${renderMarkdown(text)}</div>`
+function markdownSection(text: string, producedFiles: readonly string[]): string {
+  return `<div class="pin-markdown">${renderMarkdown(text, producedFiles)}</div>`
 }
 
 /** First line of reasoning text, mirroring ReasoningRow's collapsed summary. */
@@ -240,13 +261,19 @@ function firstLine(text: string): string {
   return newline === -1 ? text : text.slice(0, newline)
 }
 
+/** Inline Think icon (same path as IconThinkOutline14). */
+const THINK_ICON = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M7.06431 5.93342C7.68763 5.93342 8.19307 6.43904 8.19322 7.06233C8.19322 7.68573 7.68772 8.19123 7.06431 8.19123C6.44099 8.19113 5.9354 7.68567 5.9354 7.06233C5.93555 6.43911 6.44108 5.93353 7.06431 5.93342Z" fill="currentColor"/><path fill-rule="evenodd" clip-rule="evenodd" d="M8.6815 0.963693C10.1169 0.447019 11.6266 0.374829 12.5633 1.31135C13.5 2.24805 13.4277 3.75776 12.911 5.19319C12.7126 5.74431 12.4386 6.31796 12.0965 6.89729C12.4969 7.54638 12.8141 8.19018 13.036 8.80647C13.5527 10.2419 13.6251 11.7516 12.6883 12.6883C11.7516 13.625 10.242 13.5527 8.8065 13.036C8.19022 12.8141 7.54641 12.4969 6.89732 12.0965C6.31797 12.4386 5.74435 12.7125 5.19322 12.911C3.75777 13.4276 2.2481 13.5 1.31138 12.5633C0.374859 11.6266 0.447049 10.1168 0.963724 8.68147C1.17185 8.10338 1.46321 7.50063 1.82896 6.8924C1.52182 6.35711 1.27235 5.82825 1.08872 5.31819C0.572068 3.88278 0.499714 2.37306 1.43638 1.43635C2.37308 0.499655 3.8828 0.572044 5.31822 1.08869C5.82828 1.27232 6.35715 1.5218 6.89243 1.82893C7.50066 1.46318 8.10341 1.17181 8.6815 0.963693ZM11.3573 8.01154C10.9083 8.62253 10.3901 9.22873 9.80943 9.8094C9.22877 10.3901 8.62255 10.9083 8.01158 11.3572C8.4257 11.5841 8.8287 11.7688 9.21275 11.9071C10.5456 12.3868 11.4246 12.2547 11.8397 11.8397C12.2548 11.4246 12.3869 10.5456 11.9071 9.21272C11.7688 8.82866 11.5841 8.42568 11.3573 8.01154ZM2.56529 8.02912C2.37344 8.39322 2.21495 8.74796 2.09263 9.08772C1.61291 10.4204 1.74512 11.2995 2.16001 11.7147C2.57505 12.1297 3.45415 12.2618 4.78697 11.7821C5.11057 11.6656 5.44786 11.5164 5.7938 11.3367C5.249 10.9223 4.70922 10.4533 4.19029 9.9344C3.57578 9.31987 3.03169 8.67633 2.56529 8.02912ZM6.90708 3.2469C6.24065 3.70479 5.5646 4.26321 4.91392 4.91389C4.26325 5.56456 3.70482 6.24063 3.24693 6.90705C3.72674 7.63325 4.32777 8.37459 5.03892 9.08576C5.64943 9.69627 6.28183 10.2265 6.90806 10.6678C7.59368 10.2025 8.2908 9.63076 8.96079 8.96076C9.6308 8.29075 10.2025 7.59366 10.6678 6.90803C10.2265 6.2818 9.69631 5.6494 9.08579 5.03889C8.37462 4.32773 7.63328 3.72672 6.90708 3.2469ZM11.7147 2.15998C11.2996 1.74509 10.4204 1.61288 9.08775 2.0926C8.74835 2.21479 8.39382 2.37271 8.03013 2.56428C8.67728 3.03065 9.31995 3.5758 9.93443 4.19026C10.4534 4.7092 10.9223 5.24896 11.3368 5.79377C11.5164 5.4 11.6657 5.11056 11.7821 4.78694C12.2618 3.45412 12.1297 2.57502 11.7147 2.15998Z" fill="currentColor"/></svg>`
+
+/** Inline chevron icon (same path as IconChevronDownOutline14). */
+const CHEVRON_ICON = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M11.8486 5.5L11.4238 5.92383L8.69727 8.65137C8.44157 8.90706 8.21562 9.13382 8.01172 9.29785C7.79912 9.46883 7.55595 9.61756 7.25 9.66602C7.08435 9.69222 6.91565 9.69222 6.75 9.66602C6.44405 9.61756 6.20088 9.46883 5.98828 9.29785C5.78438 9.13382 5.55843 8.90706 5.30273 8.65137L2.57617 5.92383L2.15137 5.5L3 4.65137L3.42383 5.07617L6.15137 7.80273C6.42595 8.07732 6.59876 8.24849 6.74023 8.3623C6.87291 8.46904 6.92272 8.47813 6.9375 8.48047C6.97895 8.48703 7.02105 8.48703 7.0625 8.48047C7.07728 8.47813 7.12709 8.46904 7.25977 8.3623C7.40124 8.24849 7.57405 8.07732 7.84863 7.80273L10.5762 5.07617L11 4.65137L11.8486 5.5Z" fill="currentColor"/></svg>`
+
 /** Render one assistant content block. */
-function renderBlock(block: AssistantBlock, t: PinWindowText): string {
+function renderBlock(block: AssistantBlock, t: PinWindowText, producedFiles: readonly string[]): string {
   switch (block.kind) {
     case 'text':
-      return markdownSection(block.text)
+      return markdownSection(block.text, producedFiles)
     case 'reasoning':
-      return `<details class="pin-reasoning"><summary class="pin-reasoning-summary"><span class="pin-reasoning-title">${escapeHtml(t('window.reasoning'))}</span><span class="pin-reasoning-sep" aria-hidden="true"></span><span class="pin-reasoning-text">${escapeHtml(firstLine(block.text))}</span></summary><div class="pin-reasoning-body">${escapeHtml(block.text)}</div></details>`
+      return `<details class="pin-reasoning"><summary class="pin-reasoning-summary"><span class="pin-reasoning-leading">${CHEVRON_ICON}${THINK_ICON}</span><span class="pin-reasoning-title">${escapeHtml(t('window.reasoning'))}</span><span class="pin-reasoning-sep" aria-hidden="true"></span><span class="pin-reasoning-text">${escapeHtml(firstLine(block.text))}</span></summary><div class="pin-reasoning-body">${escapeHtml(block.text)}</div></details>`
     case 'tool-call':
       return `<details class="pin-tool"><summary class="pin-tool-summary"><span class="pin-tool-title">${escapeHtml(t('window.toolCall'))} · ${escapeHtml(block.name)}</span></summary><pre class="pin-tool-args">${escapeHtml(block.argsRaw)}</pre></details>`
     case 'image':
@@ -257,10 +284,10 @@ function renderBlock(block: AssistantBlock, t: PinWindowText): string {
 }
 
 /** Render one assistant step's visible blocks (tool-call heads are tool rows). */
-function renderAssistantItem(blocks: readonly AssistantBlock[], t: PinWindowText): string {
+function renderAssistantItem(blocks: readonly AssistantBlock[], t: PinWindowText, producedFiles: readonly string[]): string {
   return blocks
     .filter(block => block.kind !== 'tool-call')
-    .map(block => renderBlock(block, t))
+    .map(block => renderBlock(block, t, producedFiles))
     .join('')
 }
 
@@ -365,6 +392,24 @@ h1 { font: var(--dsw-font-markdown-h1); margin: 0 0 8px; }
 .pin-markdown > *:first-child, .pin-markdown p:first-child { margin-top: 0 !important; }
 .pin-markdown > *:last-child, .pin-markdown p:last-child { margin-bottom: 0 !important; }
 
+/* Inline code wrapping a file mention, mirroring render.tsx fileMention */
+.pin-inline-code { padding: 0; }
+.pin-inline-code .pin-file-mention {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--dsw-alias-state-business-primary);
+  text-decoration: none;
+  cursor: pointer;
+}
+.pin-inline-code .pin-file-mention:hover {
+  outline: none;
+  text-decoration: underline var(--dsw-alias-state-business-primary);
+  text-underline-offset: 3px;
+}
+
 /* Fenced code block, mirroring CodeBlock surface */
 .pin-code-block {
   margin: 16px 0;
@@ -386,17 +431,32 @@ h1 { font: var(--dsw-font-markdown-h1); margin: 0 0 8px; }
   letter-spacing: .04em;
 }
 
-/* Reasoning row, mirroring ReasoningRow.module.css */
+/* Reasoning row, mirroring ReasoningRow.module.css + DisclosureRow */
 .pin-reasoning { margin: 0 0 16px; }
 .pin-reasoning-summary {
   display: flex;
   align-items: center;
+  height: 24px;
   cursor: pointer;
   list-style: none;
   font-size: 14px;
   line-height: 24px;
 }
 .pin-reasoning-summary::-webkit-details-marker { display: none; }
+.pin-reasoning-leading {
+  position: relative;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.pin-reasoning-leading svg { position: absolute; inset: 0; margin: auto; }
+.pin-reasoning-leading .pin-chevron { opacity: 0; transition: opacity 100ms ease; }
+.pin-reasoning-summary:hover .pin-reasoning-leading .pin-chevron { opacity: 1; }
+.pin-reasoning-summary:hover .pin-reasoning-leading .pin-think { opacity: 0; }
+.pin-reasoning[open] .pin-reasoning-leading .pin-chevron { opacity: 1; }
+.pin-reasoning[open] .pin-reasoning-leading .pin-think { opacity: 0; }
 .pin-reasoning-title { flex: none; color: var(--dsw-alias-label-secondary); font-weight: 400; }
 .pin-reasoning-sep { flex: none; width: 2px; height: 2px; margin: 0 8px; border-radius: 1px; background: var(--dsw-alias-label-caption); }
 .pin-reasoning-text {
@@ -407,6 +467,8 @@ h1 { font: var(--dsw-font-markdown-h1); margin: 0 0 8px; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.pin-reasoning[open] .pin-reasoning-sep,
+.pin-reasoning[open] .pin-reasoning-text { display: none; }
 .pin-reasoning-body {
   padding: 4px 0 4px 22px;
   color: var(--dsw-alias-label-tertiary);
@@ -472,7 +534,7 @@ function buildDocument(pin: PinTurnView, t: PinWindowText, stylesheets: readonly
   const body = pin.items.length === 0
     ? `<p class="empty">${escapeHtml(t('window.empty'))}</p>`
     : pin.items.map((item) => {
-      if (item.kind === 'assistant') return renderAssistantItem(item.blocks, t)
+      if (item.kind === 'assistant') return renderAssistantItem(item.blocks, t, pin.producedFiles)
       return renderToolRoot(item.root, t)
     }).join('')
 

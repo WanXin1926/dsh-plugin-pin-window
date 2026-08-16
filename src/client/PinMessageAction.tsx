@@ -13,6 +13,35 @@ import type { PinMessageActionProps } from './slots.ts'
 import { openPinWindow, type PinTurnItem, type PinTurnView } from './pin-window.ts'
 import css from './PinMessageAction.module.css'
 
+/** File paths one tool result reports having created or changed. */
+function producedPathsOf(root: ToolCallBlock): readonly string[] {
+  if (!('kind' in root) || root.kind !== 'tool-result') return []
+  const view = (root as { callView?: { card?: string; kind?: string; locations?: readonly { path?: unknown }[] } | null }).callView
+  if (view == null) return []
+  if (view.card !== 'diff' && !(view.card === 'generic' && view.kind === 'edit')) return []
+  const paths: string[] = []
+  for (const location of view.locations ?? []) {
+    const path = location?.path
+    if (typeof path === 'string') paths.push(path)
+  }
+  return paths
+}
+
+/** Deduplicate produced paths in first-seen order. */
+function collectProducedFiles(items: readonly PinTurnItem[]): string[] {
+  const seen = new Set<string>()
+  const produced: string[] = []
+  for (const item of items) {
+    if (item.kind !== 'tool') continue
+    for (const path of producedPathsOf(item.root)) {
+      if (seen.has(path)) continue
+      seen.add(path)
+      produced.push(path)
+    }
+  }
+  return produced
+}
+
 /**
  * Build the pinned-turn view from the conversation snapshot.
  * @param snapshot - the live session snapshot.
@@ -53,6 +82,7 @@ function buildPinView(snapshot: ConversationSnapshot, messageId: string): PinTur
       : `${target.provenance.provider} / ${target.provenance.model}`,
     time: target.time,
     items,
+    producedFiles: collectProducedFiles(items),
   }
 }
 
