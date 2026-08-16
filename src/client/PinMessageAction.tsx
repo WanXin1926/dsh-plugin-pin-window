@@ -27,6 +27,12 @@ function producedPathsOf(root: ToolCallBlock): readonly string[] {
   return paths
 }
 
+/** First line of reasoning text, for the collapsed summary. */
+function firstLine(text: string): string {
+  const newline = text.indexOf('\n')
+  return newline === -1 ? text : text.slice(0, newline)
+}
+
 /** Deduplicate produced paths in first-seen order. */
 function collectProducedFiles(items: readonly PinTurnItem[]): string[] {
   const seen = new Set<string>()
@@ -55,6 +61,7 @@ function buildPinView(snapshot: ConversationSnapshot, messageId: string): PinTur
 
   const items: PinTurnItem[] = []
   const nodeKeys: string[] = []
+  const reasoningFirstLines: string[] = []
   const keys = snapshot.chat.locations.getTurn(target.turn)
   for (const key of keys) {
     const viewNode = snapshot.chat.nodes.get(key)
@@ -69,6 +76,9 @@ function buildPinView(snapshot: ConversationSnapshot, messageId: string): PinTur
       const data = viewNode.data as { blocks?: readonly AssistantBlock[] }
       if (data.blocks !== undefined && data.blocks.length > 0) {
         items.push({ kind: 'assistant', blocks: data.blocks })
+        for (const block of data.blocks) {
+          if (block.kind === 'reasoning') reasoningFirstLines.push(firstLine(block.text))
+        }
       }
     } else if (viewNode.kind === 'tool-call') {
       const data = viewNode.data as { root?: ToolCallBlock }
@@ -91,6 +101,7 @@ function buildPinView(snapshot: ConversationSnapshot, messageId: string): PinTur
     items,
     producedFiles: collectProducedFiles(items),
     nodeKeys,
+    reasoningFirstLines,
   }
 }
 

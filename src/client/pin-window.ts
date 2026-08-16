@@ -42,6 +42,8 @@ export interface PinTurnView {
   producedFiles: readonly string[]
   /** Chat-flow keys of the turn's rendered nodes, for DOM cloning. */
   nodeKeys: readonly string[]
+  /** Collapsed-summary first lines for reasoning rows, in DOM order. */
+  reasoningFirstLines: readonly string[]
 }
 
 /** Escape text for safe HTML insertion. */
@@ -539,16 +541,46 @@ h1 { font: var(--dsw-font-markdown-h1); margin: 0 0 8px; }
 .empty { color: var(--dsw-alias-label-tertiary); }
 `
 
-/** Small script that restores disclosure-row toggling for cloned DOM. */
-const TOGGLE_SCRIPT = `<script>(function () {
+/** Build the popup script: collapse bodies by default, restore reasoning
+ *  summaries, and wire disclosure-row toggling for the cloned DOM. */
+function buildToggleScript(firstLines: readonly string[]): string {
+  return `<script>(function () {
+  var firstLines = ${JSON.stringify(firstLines)}
+  var rows = document.querySelectorAll('[data-disclosure-row]')
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i]
+    var root = row.parentElement
+    if (root === null) continue
+    var body = null
+    for (var j = 0; j < root.children.length; j++) {
+      if (root.children[j] !== row) { body = root.children[j]; break }
+    }
+    if (body !== null) {
+      body.setAttribute('hidden', '')
+      root.removeAttribute('data-open')
+    }
+  }
+  var thinkRows = document.querySelectorAll('[data-variant="think"] [data-disclosure-row]')
+  for (var k = 0; k < thinkRows.length; k++) {
+    var thinkRow = thinkRows[k]
+    var text = firstLines[k] !== undefined ? firstLines[k] : ''
+    var sep = document.createElement('span')
+    sep.className = 'pin-reasoning-sep'
+    sep.setAttribute('aria-hidden', 'true')
+    var summary = document.createElement('span')
+    summary.className = 'pin-reasoning-text'
+    summary.textContent = text
+    thinkRow.appendChild(sep)
+    thinkRow.appendChild(summary)
+  }
   document.addEventListener('click', function (event) {
     var row = event.target.closest ? event.target.closest('[data-disclosure-row]') : null
     if (row === null) return
     var root = row.parentElement
     if (root === null) return
     var body = null
-    for (var i = 0; i < root.children.length; i++) {
-      if (root.children[i] !== row) { body = root.children[i]; break }
+    for (var j = 0; j < root.children.length; j++) {
+      if (root.children[j] !== row) { body = root.children[j]; break }
     }
     if (body === null) return
     if (body.hasAttribute('hidden')) {
@@ -560,22 +592,30 @@ const TOGGLE_SCRIPT = `<script>(function () {
     }
   })
 })()</script>`
+}
+
+/** Find the live chat-flow seats for the pinned turn's node keys, in DOM order. */
+function findTurnSeats(nodeKeys: readonly string[]): HTMLElement[] {
+  const wanted = new Set(nodeKeys)
+  const seats: HTMLElement[] = []
+  for (const seat of Array.from(document.querySelectorAll<HTMLElement>('[data-chat-flow-key]'))) {
+    const key = seat.getAttribute('data-chat-flow-key')
+    if (key !== null && wanted.has(key)) seats.push(seat)
+  }
+  return seats
+}
 
 /**
  * Clone the live page's already-rendered DOM for the pinned turn. This is
  * what makes the popup pixel-identical to the original: we copy the same
  * React-rendered nodes and link the same stylesheets, instead of re-rendering
  * from data with an approximation.
- * @param nodeKeys - chat-flow keys of the turn's rendered nodes.
+ * @param seats - the live chat-flow seat elements to clone.
  * @returns concatenated outerHTML of the cloned seats, or '' when none found.
  */
-function buildCloneHtml(nodeKeys: readonly string[]): string {
-  const wanted = new Set(nodeKeys)
-  const seats = Array.from(document.querySelectorAll<HTMLElement>('[data-chat-flow-key]'))
+function cloneSeats(seats: readonly HTMLElement[]): string {
   const parts: string[] = []
   for (const seat of seats) {
-    const key = seat.getAttribute('data-chat-flow-key')
-    if (key === null || !wanted.has(key)) continue
     const clone = seat.cloneNode(true) as HTMLElement
     // The turn-tail keeps its produced-files row; only the interactive action
     // strip (copy / branch / feedback / pin) is removed.
@@ -585,6 +625,32 @@ function buildCloneHtml(nodeKeys: readonly string[]): string {
     parts.push(clone.outerHTML)
   }
   return parts.join('')
+}
+
+/**
+ * Expand every collapsed disclosure row in the selected seats so React
+ * materializes the bodies into the DOM before cloning. Returns the rows that
+ * were expanded, so the caller can collapse them again afterwards.
+ */
+function expandDisclosureRows(seats: readonly HTMLElement[]): HTMLElement[] {
+  const expandedRows: HTMLElement[] = []
+  for (const seat of seats) {
+    for (const row of Array.from(seat.querySelectorAll<HTMLElement>('[data-disclosure-row]'))) {
+      const root = row.parentElement
+      if (root === null || root.hasAttribute('data-open')) continue
+      if (!row.hasAttribute('data-expandable')) continue
+      row.click()
+      expandedRows.push(row)
+    }
+  }
+  return expandedRows
+}
+
+/** Collapse the rows that were expanded for cloning, restoring the live page. */
+function collapseDisclosureRows(rows: readonly HTMLElement[]): void {
+  for (const row of rows) {
+    if (row.isConnected) row.click()
+  }
 }
 
 /** Build the full popup document for one pinned turn. */
@@ -639,7 +705,7 @@ function buildDocument(
     </header>
     ${body}
   </main>
-  ${TOGGLE_SCRIPT}
+  ${buildToggleScript(pin.reasoningFirstLines)}
 </body>
 </html>`
 }
@@ -649,7 +715,7 @@ function buildDocument(
  * @param pin - the pinned turn content.
  * @param t - dictionary access (namespace `pin`).
  */
-export function openPinWindow(pin: PinTurnView, t: PinWindowText): void {
+export async function openPinWindow(pin: PinTurnView, t: PinWindowText): Promise<void> {
   const stylesheets = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
     .map(link => link.getAttribute('href'))
     .filter((href): href is string => typeof href === 'string')
@@ -658,7 +724,18 @@ export function openPinWindow(pin: PinTurnView, t: PinWindowText): void {
   const pluginCss = Array.from(document.querySelectorAll('style'))
     .map(style => style.textContent ?? '')
     .join('\n')
-  const cloneHtml = buildCloneHtml(pin.nodeKeys)
+
+  // Collapsed rows have no body in the DOM (React only renders children when
+  // open). Expand them first, let React materialize the bodies, then clone;
+  // finally restore the live page to its previous collapsed state.
+  const seats = findTurnSeats(pin.nodeKeys)
+  const expandedRows = expandDisclosureRows(seats)
+  if (expandedRows.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, 250))
+  }
+  const cloneHtml = cloneSeats(seats)
+  collapseDisclosureRows(expandedRows)
+
   const html = buildDocument(pin, t, stylesheets, cloneHtml, pluginCss)
   const win = window.open('', '_blank', 'width=760,height=900,menubar=no,toolbar=no,location=no,status=no')
   if (win === null) return
