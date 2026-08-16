@@ -1,0 +1,6 @@
+# dsh-plugin-pin-window bundle patch.
+# Adds the plugin row to the profile's loader tree. The package's browser half
+# is discovered from package.json's dsh.client declaration by dsh-client-modules.
+- insert:
+    - id: pin-window
+      name: 'dsh-plugin-pin-window'
